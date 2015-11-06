@@ -8,9 +8,12 @@ from peewee import *
 import code
 import dateutil.parser
 import dateutil.tz
+import logging
 import MeCab
 import os
 import re
+
+logging.basicConfig(format='%(asctime)s : %(levelname)s : %(message)s', level=logging.INFO)
 
 db = SqliteDatabase('tweets.db')
 
