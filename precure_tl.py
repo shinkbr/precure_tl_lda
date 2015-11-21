@@ -11,6 +11,7 @@ import dateutil.tz
 import logging
 import MeCab
 import os
+import pickle
 import re
 
 logging.basicConfig(format='%(asctime)s : %(levelname)s : %(message)s', level=logging.INFO)
@@ -32,6 +33,43 @@ class Tweet(PrecureTLModel):
     class Meta:
         db_table = 'timeline_concat'
 
+def calculate_models():
+    timelines = load_pickle('analyzed_timelines.pickle')
+
+    dictionary = corpora.Dictionary(timelines)
+    dictionary.save('models/precure_tl.dict')
+
+    corpus = [dictionary.doc2bow(i) for i in timelines]
+    corpora.MmCorpus.serialize('models/precure_tl.mm', corpus)
+
+    lda = models.ldamulticore.LdaMulticore(corpus, id2word = dictionary, workers = 4, num_topics = 5)
+    lda.save('models/precure_tl.lda')
+
+    hdp = models.hdpmodel.HdpModel(corpus, id2word = dictionary)
+    hdp.save('models/precure_tl.hdp')
+
+    sim = similarities.MatrixSimilarity(lda.get_document_topics(corpus))
+    sim.save("models/precure_tl_similarity.index")
+
+def load_models():
+    global _dictionary, _corpus, _lda, _hdp, _sim
+    _dictionary = corpora.Dictionary.load('models/precure_tl.dict')
+    _corpus = corpora.MmCorpus('models/precure_tl.mm')
+    _lda = models.ldamodel.LdaModel.load('models/precure_tl.lda')
+    _hdp = models.ldamodel.LdaModel.load('models/precure_tl.hdp')
+    _sim = similarities.docsim.Similarity.load(('models/precure_tl_similarity.index'))
+
+def dump_pickle(var, file_name):
+    f = open('pickle/' + file_name, 'wb')
+    pickle.dump(var, f)
+    f.close()
+
+def load_pickle(file_name):
+    f = open('pickle/' + file_name, 'rb')
+    v = pickle.load(f)
+    f.close()
+    return v
+
 def get_tweets():
     global _tweets
 
@@ -52,8 +90,17 @@ def group_by_date():
 
     return tweets
 
-def parse_timelines(timelines):
-    parsed_timelines = []
+def get_analyzed_timelines():
+    global _analyzed_timelines
+
+    try:
+        return _analyzed_timelines
+    except:
+        _analyzed_timelines =  analyze_timelines(group_by_date())
+        return _analyzed_timelines
+
+def analyze_timelines(timelines):
+    analyzed_timelines = []
     m = MeCab.Tagger("-d /usr/local/lib/mecab/dic/mecab-ipadic-neologd")
     for k, v in timelines.items():
         doc = []
@@ -67,9 +114,9 @@ def parse_timelines(timelines):
                     continue
                 doc.append(node.surface)
                 node = node.next
-        parsed_timelines.append(doc)
+        analyzed_timelines.append(doc)
 
-    return parsed_timelines
+    return analyzed_timelines
 
 def strip_stopwords(text):
     text = re.sub(r'^(RT)', '', text)
@@ -91,28 +138,11 @@ def count_words(documents):
 
     return count
 
-def calculate_models():
-    timelines = group_by_date()
-    parsed = parse_timelines(timelines)
-
-    dictionary = corpora.Dictionary(parsed)
-    dictionary.save('models/precure_tl.dict')
-
-    corpus = [dictionary.doc2bow(i) for i in parsed]
-    corpora.MmCorpus.serialize('models/precure_tl.mm', corpus)
-
-    lda = models.ldamulticore.LdaMulticore(corpus, id2word = dictionary, workers = 4, num_topics = 5)
-    lda.save('models/precure_tl.lda')
-
-    hdp = models.hdpmodel.HdpModel(corpus, id2word = dictionary)
-    hdp.save('models/precure_tl.hdp')
-
-def load_models():
-    global _dictionary, _corpus, _lda, _hdp, _sim
-    _dictionary = corpora.Dictionary.load('models/precure_tl.dict')
-    _corpus = corpora.MmCorpus('models/precure_tl.mm')
-    _lda = models.ldamodel.LdaModel.load('models/precure_tl.lda')
-    _hdp = models.ldamodel.LdaModel.load('models/precure_tl.hdp')
+# timelines = morphologically analyzed timelines
+def topic_dist(timelines):
+    for tl in timelines:
+        corpus = _dictionary.doc2bow(tl)
+        print(_lda[corpus])
 
 if __name__ == '__main__':
     code.interact(local=locals())
