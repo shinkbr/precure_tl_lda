@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 
 from collections import defaultdict
+from collections import OrderedDict
 from gensim import corpora, models, similarities
 from itertools import chain
 from peewee import *
@@ -116,6 +117,55 @@ date_to_epnum = {
         datetime.date(2015, 12, 13): 44
         }
 
+epnum_to_member = {
+        1: 0,
+        2: 1,
+        3: 4,
+        4: 2,
+        5: 2,
+        6: 0,
+        7: 0,
+        8: 0,
+        9: 1,
+        10: 4,
+        11: 4,
+        12: 2,
+        13: 3,
+        14: 0,
+        15: 4,
+        16: 1,
+        17: 2,
+        18: 0,
+        19: 4,
+        20: 4,
+        21: 4,
+        22: 3,
+        23: 3,
+        24: 3,
+        25: 3,
+        26: 4,
+        27: 4,
+        28: 3,
+        29: 4,
+        30: 4,
+        31: 4,
+        32: 1,
+        33: 4,
+        34: 0,
+        35: 4,
+        36: 1,
+        37: 0,
+        38: 0,
+        39: 0,
+        40: 3,
+        41: 4,
+        42: 2,
+        43: 2,
+        44: 1
+        }
+
+member_to_color = {0: 'pink', 1: 'blue', 2: 'yellow', 3: 'red', 4: 'white'}
+
 class PrecureTLModel(Model):
     class Meta:
         database = db
@@ -132,7 +182,7 @@ class Tweet(PrecureTLModel):
         db_table = 'timeline_concat'
 
 def calculate_models():
-    timelines = load_pickle('analyzed_timelines.pickle')
+    timelines = load_pickle('analyzed_timelines.pickle').values()
 
     dictionary = corpora.Dictionary(timelines)
     dictionary.save('models/precure_tl.dict')
@@ -140,9 +190,12 @@ def calculate_models():
     corpus = [dictionary.doc2bow(i) for i in timelines]
     corpora.MmCorpus.serialize('models/precure_tl.mm', corpus)
 
-    num_topics = 4
-    lda = models.ldamulticore.LdaMulticore(corpus, id2word = dictionary,
-            workers = 4, num_topics = num_topics)
+    num_topics = 5
+    lda = models.ldamulticore.LdaMulticore(corpus,
+            id2word = dictionary,
+            workers = 4,
+            num_topics = num_topics,
+            passes = 2)
     lda.save('models/precure_tl_%s_topics.lda' % num_topics)
 
     # hdp = models.hdpmodel.HdpModel(corpus, id2word = dictionary)
@@ -155,7 +208,7 @@ def load_models():
     global _dictionary, _corpus, _lda, _hdp, _sim
     _dictionary = corpora.Dictionary.load('models/precure_tl.dict')
     _corpus = corpora.MmCorpus('models/precure_tl.mm')
-    num_topics = 4
+    num_topics = 5
     _lda = models.ldamodel.LdaModel.load('models/precure_tl_%s_topics.lda' % num_topics)
     # _hdp = models.ldamodel.LdaModel.load('models/precure_tl.hdp')
     _sim = similarities.docsim.Similarity.load(('models/precure_tl_similarity.index'))
@@ -177,17 +230,17 @@ def get_tweets():
     try:
         return _tweets
     except:
-        if os.environ.get('LIMIT') == 'NONE':
-            _tweets = list(Tweet.select())
-        else:
-            _tweets = list(Tweet.select().limit(80000))
+        _tweets = list(Tweet.select())
         return _tweets
 
 def group_by_date():
-    tweets = defaultdict(list)
-
+    tmp = defaultdict(list)
     for i in get_tweets():
-        tweets[i.get_created_at().date()].append(i)
+        tmp[i.get_created_at().date()].append(i)
+
+    tweets = OrderedDict()
+    for i in sorted(tmp.keys()):
+        tweets[i] = tmp[i]
 
     return tweets
 
@@ -201,7 +254,7 @@ def get_analyzed_timelines():
         return _analyzed_timelines
 
 def analyze_timelines(timelines):
-    analyzed_timelines = {}
+    analyzed_timelines = OrderedDict()
     m = MeCab.Tagger("-d /usr/local/lib/mecab/dic/mecab-ipadic-neologd")
     for k, v in timelines.items():
         doc = []
@@ -211,6 +264,9 @@ def analyze_timelines(timelines):
             while node:
                 feature = node.feature.split(',')
                 if feature[0] in ["助詞", "助動詞", "記号", "BOS/EOS"]:
+                    node = node.next
+                    continue
+                if node.surface in ["プリキュア"]:
                     node = node.next
                     continue
                 doc.append(node.surface)
@@ -251,27 +307,25 @@ def get_similarity_index(timelines):
     try:
         return _sim
     except:
-        corpora = [tl['corpus'] for tl in timelines]
-        _sim = similarities.MatrixSimilarity(_lda[corpora])
+        corpus = [_dictionary.doc2bow(tl) for tl in timelines.values()]
+        _sim = similarities.MatrixSimilarity(_lda[corpus])
 
-def get_edges(timelines):
-    sim = get_similarity_index(timelines)
+def get_edges(threshold = 0.9):
+    topics = _lda[_corpus]
+
     edges = []
-
-    for i, tl in enumerate(timelines):
-        corpus = _dictionary.doc2bow(tl)
-        topics = _lda[corpus]
-        for j, s in enumerate(sim[topics]):
-            if j <= i:
+    for i, t in enumerate(topics):
+        sim = _sim[t]
+        for j, s in enumerate(sim):
+            if i >= j:
                 continue
-            # setting similarity threshold as 0.5
-            if s >= 0.5:
+            if s >= threshold:
                 edges.append((i, j))
 
     return edges
 
 def sim_dist(timelines):
-    sim = get_similarity_index(timelines)
+    sim = get_similarity_index(timelines.values)
     edges = []
 
     count = defaultdict(lambda: 0)
@@ -286,19 +340,36 @@ def sim_dist(timelines):
 
     return count
 
-def draw_ig_graph(timelines):
+def draw_ig_graph(timelines, index_to_title, threshold = 0.9):
     g = igraph.Graph()
     g.add_vertices(len(timelines))
-    edges = get_edges(timelines)
+    edges = get_edges(threshold = threshold)
     g.add_edges(edges)
 
     for i, v in enumerate(g.vs):
-        v['label'] = i
+        epnum = date_to_epnum[timelines.keys()[i]]
+        v['label'] = epnum
+        v['color'] = member_to_color[epnum_to_member[epnum]]
     igraph.plot(g, 'graph_kk.png', bbox = (4000, 4000), layout = g.layout('kk'))
 
+def print_similar(index_to_title, threshold = 0.9):
+    topics = _lda[_corpus]
+    for i, t in enumerate(topics):
+        sim = _sim[t]
+        for j, s in enumerate(sim):
+            if i >= j:
+                continue
+            if s < threshold:
+                continue
+            print("%s %s %s" % (s, index_to_title[i], index_to_title[j]))
+
 if __name__ == '__main__':
-    gbd = load_pickle('group_by_date.pickle')
-    at = analyze_timelines(gbd)
-    # timelines = load_pickle('analyzed_timelines.pickle')
-    # load_models()
+    load_models()
+    timelines = load_pickle('analyzed_timelines.pickle')
+    index_to_title = [titles[date_to_epnum[i]] for i in timelines.keys()]
+
+    threshold = 0.9
+    print_similar(index_to_title, threshold = threshold)
+    draw_ig_graph(timelines, index_to_title, threshold = threshold)
+
     code.interact(local=locals())
