@@ -19,9 +19,10 @@ import os
 import pickle
 import re
 
-logging.basicConfig(format='%(asctime)s : %(levelname)s : %(message)s', level=logging.INFO)
+# logging.basicConfig(format='%(asctime)s : %(levelname)s : %(message)s', level=logging.INFO)
 
 db = SqliteDatabase('tweets.db')
+num_topics = 5
 
 titles = {
         1: '私がプリンセス？キュアフローラ誕生！',
@@ -185,33 +186,32 @@ def calculate_models():
     timelines = load_pickle('analyzed_timelines.pickle').values()
 
     dictionary = corpora.Dictionary(timelines)
+    # dictionary.filter_extremes(no_below = 0, no_above = 0.5)
     dictionary.save('models/precure_tl.dict')
 
     corpus = [dictionary.doc2bow(i) for i in timelines]
     corpora.MmCorpus.serialize('models/precure_tl.mm', corpus)
 
-    num_topics = 5
     lda = models.ldamulticore.LdaMulticore(corpus,
             id2word = dictionary,
             workers = 4,
             num_topics = num_topics,
-            passes = 2)
+            passes = 5)
     lda.save('models/precure_tl_%s_topics.lda' % num_topics)
 
     # hdp = models.hdpmodel.HdpModel(corpus, id2word = dictionary)
     # hdp.save('models/precure_tl.hdp')
 
-    sim = similarities.MatrixSimilarity(lda.get_document_topics(corpus))
-    sim.save("models/precure_tl_similarity.index")
+    # sim = similarities.MatrixSimilarity(lda.get_document_topics(corpus))
+    # sim.save("models/precure_tl_similarity.index")
 
 def load_models():
     global _dictionary, _corpus, _lda, _hdp, _sim
     _dictionary = corpora.Dictionary.load('models/precure_tl.dict')
     _corpus = corpora.MmCorpus('models/precure_tl.mm')
-    num_topics = 5
     _lda = models.ldamodel.LdaModel.load('models/precure_tl_%s_topics.lda' % num_topics)
     # _hdp = models.ldamodel.LdaModel.load('models/precure_tl.hdp')
-    _sim = similarities.docsim.Similarity.load(('models/precure_tl_similarity.index'))
+    # _sim = similarities.docsim.Similarity.load(('models/precure_tl_similarity.index'))
 
 def dump_pickle(var, file_name):
     f = open('pickle/' + file_name, 'wb')
@@ -236,6 +236,8 @@ def get_tweets():
 def group_by_date():
     tmp = defaultdict(list)
     for i in get_tweets():
+        if i.text[:3] == 'RT ':
+            continue
         tmp[i.get_created_at().date()].append(i)
 
     tweets = OrderedDict()
@@ -256,6 +258,13 @@ def get_analyzed_timelines():
 def analyze_timelines(timelines):
     analyzed_timelines = OrderedDict()
     m = MeCab.Tagger("-d /usr/local/lib/mecab/dic/mecab-ipadic-neologd")
+    stop_words = ['し', 'さん', 'の', 'ん', 'てる', 'ちゃん',
+            'この', 'れ', 'これ', 'あ', 'する', 'さ', 'そう', 'お', 
+            'こと', 'て', 'なっ', 'い', 'き', 'ー', '0', 'すぎ', 'また', '何',
+            'ここ', 'もう', 'w', '3', 'え', 'れる', 'すぎる', '2', 'ご',
+            'み', 'なん', '1', 'それ', 'やっ', 'どう', 'せ', 'あっ', 'その',
+            'www', 'っ', 'られ', 'ら', '4', '5', 'いる', 'ある', 'プリキュア', 'プリンセス']
+
     for k, v in timelines.items():
         doc = []
         for i in v:
@@ -266,7 +275,7 @@ def analyze_timelines(timelines):
                 if feature[0] in ["助詞", "助動詞", "記号", "BOS/EOS"]:
                     node = node.next
                     continue
-                if node.surface in ["プリキュア"]:
+                if node.surface in stop_words:
                     node = node.next
                     continue
                 doc.append(node.surface)
@@ -312,6 +321,7 @@ def get_similarity_index(timelines):
 
 def get_edges(threshold = 0.9):
     topics = _lda[_corpus]
+    _sim = similarities.MatrixSimilarity(topics, num_features = num_topics)
 
     edges = []
     for i, t in enumerate(topics):
@@ -319,6 +329,7 @@ def get_edges(threshold = 0.9):
         for j, s in enumerate(sim):
             if i >= j:
                 continue
+            print("%s %s %s" % (s, _index_to_title[i], _index_to_title[j]))
             if s >= threshold:
                 edges.append((i, j))
 
@@ -363,13 +374,39 @@ def print_similar(index_to_title, threshold = 0.9):
                 continue
             print("%s %s %s" % (s, index_to_title[i], index_to_title[j]))
 
+def count_words(timelines, order=1):
+    flattened = list(chain.from_iterable(timelines.values()))
+    count = defaultdict(lambda: 0)
+
+    for i in flattened:
+        count[i] += 1
+
+    for k, v in sorted(count.items(), key=lambda x:x[1]*order):
+        print("%s %s" % (k, v))
+
 if __name__ == '__main__':
+    '''
+    global _index_to_title
     load_models()
     timelines = load_pickle('analyzed_timelines.pickle')
-    index_to_title = [titles[date_to_epnum[i]] for i in timelines.keys()]
+    _index_to_title = [titles[date_to_epnum[i]] for i in timelines.keys()]
 
-    threshold = 0.9
-    print_similar(index_to_title, threshold = threshold)
-    draw_ig_graph(timelines, index_to_title, threshold = threshold)
+    threshold = 0.99
+    draw_ig_graph(timelines, _index_to_title, threshold = threshold)
+    '''
 
+    '''
+    timelines = load_pickle('analyzed_timelines.pickle')
+    count_words(timelines, order = -1)
+    '''
+
+    '''
+    gbd = load_pickle('group_by_date.pickle')
+    at = analyze_timelines(gbd)
+    count_words(at)
+    '''
+
+    gbd = group_by_date()
+    # at = analyze_timelines(gbd)
+    # calculate_models()
     code.interact(local=locals())
